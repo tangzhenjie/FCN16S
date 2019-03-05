@@ -66,6 +66,7 @@ def get_variable(weights, name):
     init = tf.constant_initializer(weights, dtype=tf.float32)
     # 生成变量
     var = tf.get_variable(name=name, initializer=init, shape=weights.shape)
+    return var
 
 # 有变量的shape生成平均值为0标准差为0.02的截断的正态分布数值的变量
 def weight_variable(shape, stddev=0.02, name=None):

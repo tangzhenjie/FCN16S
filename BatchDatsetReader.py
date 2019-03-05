@@ -12,9 +12,14 @@ class BatchDatset:
     image_options = {} # 改变图像的选择
     batch_offset = 0 # 获取batch数据开始的偏移量
     epochs_completed = 0 # 记录epoch的次数
-
+    """
+    Available options:
+        resize = True/ False
+        resize_size = #size of output image - does bilinear resize
+        color=True/False
+    """
     # 构造函数
-    def __init__(self, record_list, image_options = {}):
+    def __init__(self, record_list, image_options={}):
         print("Initializing Batch Dataset Reader...")
         print(image_options)
 

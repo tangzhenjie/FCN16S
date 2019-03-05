@@ -47,7 +47,7 @@ def vgg_net(weights, image):
         "conv1_1", "relu1_1", "conv1_2", "relu1_2", "pool1",
         "conv2_1", "relu2_1", "conv2_2", "relu2_2", "pool2",
         "conv3_1", "relu3_1", "conv3_2", "relu3_2", "conv3_3", "relu3_3", "pool3",
-        "conv4_1", "relu4_1", "conv4_2", "relu4_2", "conv4_3", "relu4_3" "pool4",
+        "conv4_1", "relu4_1", "conv4_2", "relu4_2", "conv4_3", "relu4_3", "pool4",
         "conv5_1", "relu5_1", "conv5_2", "relu5_2", "conv5_3", "relu5_3", "pool5"
     )
     # 生成的公有层的所有接口
@@ -61,6 +61,8 @@ def vgg_net(weights, image):
         if kind == "conv":
             kernels = weights[i][0][0][0][0][0]
             bias = weights[i][0][0][0][0][1]
+            print(weights[i][0][0][0][0][0].shape)
+            print(weights[i][0][0][0][0][1].shape)
             # matconvnet: weights are [width, height, in_channels, out_channels]
             # tensorflow: weights are [height, width, in_channels, out_channels]
             # 生成变量
@@ -77,31 +79,31 @@ def vgg_net(weights, image):
         net[name] = current
     return net
 
+####################### 测试代码 ################################
 
-
-
-
-
-
-
-
-
+# 构建图
 model_data = utils.get_model_data("D:\pycharm_program\FCN16S\VGG16MODEL", MODEL_URL)
-layers = model_data["layers"]
-vgg_layers = model_data["layers"][0] # type 1*37 (37层）
+weights = model_data["layers"][0]
+image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
+net = vgg_net(weights,image)
 
-for element in xrange(0, 37):
-    layer = vgg_layers[element]
-    struct = layer[0][0]
-    number = len(struct)
-    if number == 5:
-        # weights pad type name stride
-        print(struct[3])
-    if number == 2:
-        # relu层信息
-        print(struct[1])
-    if number == 6:
-        # pool层信息或者是最后一层信息
-        print(struct[0])
+# 获取数据
+training_records, validation_records = scene_parsing.read_dataset("D:\dataSet\MIT")
+datsetObject = dataset.BatchDatset(validation_records, {"resize":True, "resize_size": 224})
+batchdataset = datsetObject.get_random_batch(2)
+imagedata = batchdataset[0]
+feed_dict = {image: imagedata}
+# 运行图
+sess = tf.Session()
+sess.run(tf.global_variables_initializer())
+print(sess.run(net["pool5"], feed_dict=feed_dict).shape)
+########################## 测试代码 ###########################
+
+
+
+
+
+
+
 
 
