@@ -128,3 +128,7 @@ def add_activation_summary(var):
 def add_gradient_summary(grad, var):
     if grad is not None:
         tf.summary.histogram(var.op.name + "/gradient", grad)
+
+x = tf.ones([2,224,224,3], tf.int32)
+
+y = tf.pad()
