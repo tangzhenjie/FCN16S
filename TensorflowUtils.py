@@ -129,6 +129,32 @@ def add_gradient_summary(grad, var):
     if grad is not None:
         tf.summary.histogram(var.op.name + "/gradient", grad)
 
-x = tf.ones([2,224,224,3], tf.int32)
+#######################padding操作####################
+# 因为官方caffe代码说是先padding100
+def pading(image, paddingdata):
+    if len(image.shape) == 3:
+        # tensor的shape为[height, width, channels]
+        target_height = image.shape[0] + paddingdata * 2
+        target_width = image.shape[1] + paddingdata * 2
+        return tf.image.pad_to_bounding_box(image,offset_height=paddingdata, offset_width=paddingdata, target_height=target_height,target_width=target_width)
+    elif len(image.shape) == 4:
+        # [batch, height, width, channels]
+        target_height = image.shape[1] + paddingdata * 2
+        target_width = image.shape[2] + paddingdata * 2
+        return tf.image.pad_to_bounding_box(image, offset_height=paddingdata, offset_width=paddingdata, target_height=target_height,target_width=target_width)
+    else:
+        raise ValueError("image tensor shape error")
 
-y = tf.pad()
+# 反卷积操作
+def conv2d_transpose_strided(x, w, b, output_shape=None, stride=2):
+    if output_shape is None:
+        # 如果默认就让反卷积的输出图片大小扩大一倍，通道为卷积核上的输出通道
+        tmp_shape = x.get_shape().as_list()
+        tmp_shape[1] *= 2
+        tmp_shape[2] *= 2
+        x_shape = tf.shape(x)
+        output_shape = tf.stack([x_shape[0], tmp_shape[1], tmp_shape[2], w.get_shape().as_list()[2]])
+    conv = tf.nn.conv2d_transpose(x, w, output_shape, strides=[1, stride, stride, 1], padding="SAME")
+
+    return tf.nn.bias_add(conv, b)
+

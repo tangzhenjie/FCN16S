@@ -20,7 +20,7 @@ tf.flags.DEFINE_string("data_dir", "Data_zoo/MIT_SceneParsing/", "path to the da
 # 定义学习率
 tf.flags.DEFINE_float("learning_rate", "1e-4", "learning rate for Adam Optimizer")
 # 存放VGG16模型的mat (我们使用matlab训练好的VGG16参数)
-tf.flags.DEFINE_string("model_dir", "Model_zoo/", "Path to vgg model mat")
+tf.flags.DEFINE_string("model_dir", "D:\pycharm_program\FCN16S\VGG16MODEL", "Path to vgg model mat")
 # 是否是调试状态（如果是调试状态会额外保存一些信息）
 tf.flags.DEFINE_bool("debug", "False", "Model Debug:True/ False")
 # 执行的状态（训练 测试 显示）
@@ -40,6 +40,7 @@ IMAGE_SIZE = 224
  首先定义该网络与VGG16相同的部分
  :param weight 从.mat中获得的权重
         image  网络输入的图像
+ :return 包括相同部分所有输出的数组
 """
 def vgg_net(weights, image):
     # 首先我们定义FCN16S中使用VGG16层中的名字，用来生成相同的网络
@@ -79,13 +80,88 @@ def vgg_net(weights, image):
         net[name] = current
     return net
 
+"""
+构建FCN16S
+ :param  image 网络输入的图像 [batch, height, width, channels]
+ :return 输出与image大小相同的tensor   
+"""
+def fcn16s_net(image, keep_prob):
+    # 首先我们padding图片
+    image = utils.pading(image, 100)
+    # 转换数据类型
+    # 首先我们获取相同部分构造的模型权重
+    model_data = utils.get_model_data(FLAGS.model_dir, MODEL_URL)
+    weights = model_data["layers"][0]
+    with tf.variable_scope("VGG16"):
+        vgg16net_dict = vgg_net(weights, image)
+    with tf.variable_scope("FCN16S"):
+        pool5 = vgg16net_dict["pool5"]
+
+        # 创建fc6层
+        w6 = utils.weight_variable([7, 7, 512, 4096], name="w6")
+        b6 = utils.bias_variable([4096], name="b6")
+        conv6 = tf.nn.conv2d(pool5, w6, [1, 1, 1, 1], padding="VALID")
+        conv_bias6 = tf.nn.bias_add(conv6, b6)
+        relu6 = tf.nn.relu(conv_bias6, name="relu6")
+        if FLAGS.debug:
+            utils.add_activation_summary(relu6)
+        relu_dropout6 = tf.nn.dropout(relu6, keep_prob=keep_prob)
+
+        # 创建fc7层
+        w7 = utils.weight_variable([1, 1, 4096, 4096], name="w7")
+        b7 = utils.bias_variable([4096], name="b7")
+        conv7 = utils.conv2d_basic(relu_dropout6, w7, b7)
+        relu7 = tf.nn.relu(conv7, name="relu7")
+        if FLAGS.debug:
+            utils.add_activation_summary(relu7)
+        conv_dropout7 = tf.nn.dropout(relu7, keep_prob=keep_prob)
+
+        # 定义score_fr层
+        w8 = utils.weight_variable([1, 1, 4096, NUM_OF_CLASSES], name="w8")
+        b8 = utils.bias_variable([NUM_OF_CLASSES], name="b8")
+        score_fr = utils.conv2d_basic(conv_dropout7, w8, b8)
+
+        # 定义upscore2层
+        w9 = utils.weight_variable([4, 4, NUM_OF_CLASSES, NUM_OF_CLASSES], name="w9")
+        b9 = utils.bias_variable([NUM_OF_CLASSES], name="b9")
+        upscore2 = utils.conv2d_transpose_strided(score_fr, w9, b9)
+
+        # 定义score_pool4
+        pool4_shape = vgg16net_dict["pool4"].get_shape()
+        w10 = utils.weight_variable([1, 1, pool4_shape[3].value, NUM_OF_CLASSES], name="w10")
+        b10 = utils.bias_variable([NUM_OF_CLASSES], name="b10")
+        score_pool4 = utils.conv2d_basic(vgg16net_dict["pool4"], w10, b10)
+
+        # 定义score_pool4c
+        upscore2_shape = upscore2.get_shape()
+        upscore2_target_height = upscore2_shape[1].value
+        upscore2_target_width = upscore2_shape[2].value
+        score_pool4c = tf.image.crop_to_bounding_box(score_pool4, 5, 5, upscore2_target_height, upscore2_target_width)
+
+        # 定义fuse_pool4
+        fuse_pool4 = tf.add(upscore2, score_pool4c, name="fuse_pool4")
+
+        # 定义upscore16
+        fuse_pool4_shape = fuse_pool4.get_shape()
+        w11 = utils.weight_variable([32, 32, NUM_OF_CLASSES, NUM_OF_CLASSES], name="w11")
+        b11 = utils.bias_variable([NUM_OF_CLASSES], name="b11")
+        output_shape = tf.stack([tf.shape(fuse_pool4)[0], fuse_pool4_shape[1].value * 16, fuse_pool4_shape[2].value * 16, NUM_OF_CLASSES])
+        upscore16 = utils.conv2d_transpose_strided(fuse_pool4, w11, b11, output_shape=output_shape , stride=16)
+
+        # 定义score层
+        image_shape = image.get_shape()
+        score_target_height = image_shape[1].value - 200  # 因为输入网络的图片需要先padding100，所以减去200
+        score_target_width = image_shape[2].value - 200   # 因为输入网络的图片需要先padding100，所以减去200
+        score = tf.image.crop_to_bounding_box(upscore16, 27, 27, score_target_height, score_target_width)
+
+        return score
+
+
 ####################### 测试代码 ################################
 
 # 构建图
-model_data = utils.get_model_data("D:\pycharm_program\FCN16S\VGG16MODEL", MODEL_URL)
-weights = model_data["layers"][0]
 image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
-net = vgg_net(weights,image)
+score = fcn16s_net(image, 0.5)
 
 # 获取数据
 training_records, validation_records = scene_parsing.read_dataset("D:\dataSet\MIT")
@@ -93,10 +169,11 @@ datsetObject = dataset.BatchDatset(validation_records, {"resize":True, "resize_s
 batchdataset = datsetObject.get_random_batch(2)
 imagedata = batchdataset[0]
 feed_dict = {image: imagedata}
+
 # 运行图
 sess = tf.Session()
 sess.run(tf.global_variables_initializer())
-print(sess.run(net["pool5"], feed_dict=feed_dict).shape)
+print(sess.run(score, feed_dict=feed_dict).shape)
 ########################## 测试代码 ###########################
 
 
