@@ -154,14 +154,25 @@ def fcn16s_net(image, keep_prob):
         score_target_width = image_shape[2].value - 200   # 因为输入网络的图片需要先padding100，所以减去200
         score = tf.image.crop_to_bounding_box(upscore16, 27, 27, score_target_height, score_target_width)
 
-        return score
+        annotation_pred = tf.argmax(score, dimension=3, name="prediction")
+
+    return tf.expand_dims(annotation_pred, dim=3), score
+
+def main(argv=None):
+    #################################构建网络部分################################################
+    # 我们首先定义网络的输入部分
+    keep_probability = tf.placeholder(tf.float32, name="keep_probability")
+    image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
+    annotation = tf.placeholder(tf.int32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 1], name="annotation")
+
+    pred_annotation, logits = fcn16s_net(image, keep_probability)
 
 
 ####################### 测试代码 ################################
 
 # 构建图
 image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
-score = fcn16s_net(image, 0.5)
+predict, score = fcn16s_net(image, 0.5)
 
 # 获取数据
 training_records, validation_records = scene_parsing.read_dataset("D:\dataSet\MIT")
@@ -175,7 +186,6 @@ sess = tf.Session()
 sess.run(tf.global_variables_initializer())
 print(sess.run(score, feed_dict=feed_dict).shape)
 ########################## 测试代码 ###########################
-
 
 
 
