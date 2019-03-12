@@ -14,17 +14,21 @@ FLAGS = tf.flags.FLAGS
 # batch大小
 tf.flags.DEFINE_integer("batch_size", "2", "batch size for training")
 # 定义日志文件位置
-tf.flags.DEFINE_string("logs_dir", "logs/", "path to logs directory")
+tf.flags.DEFINE_string("logs_dir", "D:\pycharm_program\FCN16S\Logs\\", "path to logs directory")
 # 定义图像数据集存放的路径
-tf.flags.DEFINE_string("data_dir", "Data_zoo/MIT_SceneParsing/", "path to the dataset")
+tf.flags.DEFINE_string("data_dir", "D:\pycharm_program\FCN16S\Data_zoo\MIT_SceneParsing\\", "path to the dataset")
 # 定义学习率
 tf.flags.DEFINE_float("learning_rate", "1e-4", "learning rate for Adam Optimizer")
 # 存放VGG16模型的mat (我们使用matlab训练好的VGG16参数)
-tf.flags.DEFINE_string("model_dir", "D:\pycharm_program\FCN16S\VGG16MODEL", "Path to vgg model mat")
+tf.flags.DEFINE_string("model_dir", "D:\pycharm_program\FCN16S\Model_zoo\\", "Path to vgg model mat")
 # 是否是调试状态（如果是调试状态会额外保存一些信息）
 tf.flags.DEFINE_bool("debug", "False", "Model Debug:True/ False")
 # 执行的状态（训练 测试 显示）
 tf.flags.DEFINE_string("mode", "train", "Mode: train/ test/ visualize")
+# checkpoint目录
+tf.flags.DEFINE_string("checkpoint_dir", "D:\pycharm_program\FCN16S\Checkpoint\\", "path to the checkpoint")
+# 验证结果保存图像目录
+tf.flags.DEFINE_string("image_dir", "D:\pycharm_program\FCN16S\Image\\", "path to the checkpoint")
 
 # 模型地址
 MODEL_URL = "http://www.vlfeat.org/matconvnet/models/beta16/imagenet-vgg-verydeep-16.mat"
@@ -158,8 +162,18 @@ def fcn16s_net(image, keep_prob):
 
     return tf.expand_dims(annotation_pred, dim=3), score
 
+def train(loss_val, var_list):
+    optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate)
+    grads = optimizer.compute_gradients(loss_val, var_list=var_list)
+
+    if FLAGS.debug:
+        for grad, var in grads:
+            utils.add_gradient_summary(grad, var)
+    return optimizer.apply_gradients(grads)
+
+
 def main(argv=None):
-    #################################构建网络部分################################################
+    ##########################构建网络部分####################
     # 我们首先定义网络的输入部分
     keep_probability = tf.placeholder(tf.float32, name="keep_probability")
     image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
@@ -167,25 +181,126 @@ def main(argv=None):
 
     pred_annotation, logits = fcn16s_net(image, keep_probability)
 
+    # 把我们需要观察的图片和生成的结果图保存下来
+    tf.summary.image("input_image", image, max_outputs=2)
+    tf.summary.image("ground_truth", tf.cast(annotation, tf.uint8), max_outputs=2)
+    tf.summary.image("pred_annotation", tf.cast(pred_annotation, tf.uint8), max_outputs=2)
 
-####################### 测试代码 ################################
+    # 定义损失函数
+    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.squeeze(annotation, squeeze_dims=[3])), name="entropy")
 
-# 构建图
-image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
-predict, score = fcn16s_net(image, 0.5)
+    # 把损失保存下来
+    loss_summary = tf.summary.scalar("entropy", loss)
 
-# 获取数据
-training_records, validation_records = scene_parsing.read_dataset("D:\dataSet\MIT")
-datsetObject = dataset.BatchDatset(validation_records, {"resize":True, "resize_size": 224})
-batchdataset = datsetObject.get_random_batch(2)
-imagedata = batchdataset[0]
-feed_dict = {image: imagedata}
+    # 获取要训练的变量
+    trainable_var = tf.trainable_variables()
 
-# 运行图
-sess = tf.Session()
-sess.run(tf.global_variables_initializer())
-print(sess.run(score, feed_dict=feed_dict).shape)
-########################## 测试代码 ###########################
+    # 如果是调试运行下保存变量
+    if FLAGS.debug:
+        for var in trainable_var:
+            utils.add_to_regularization_and_summary(var)
+    train_op = train(loss, trainable_var)
+
+    #创建把所有要保存的调试信息集中起来的操作（以备存入文件）
+    print("Setting up summary op....")
+    summary_op = tf.summary.merge_all()
+
+    #################到此我们网络构建完毕#################
+
+    #################下面我们构建数据##########
+    print("Setting up image reader...")
+    train_records, valid_records = scene_parsing.read_dataset(FLAGS.data_dir)
+    # 打印出来看看数据条数是否正确
+    print(len(train_records))
+    print(len(valid_records))
+
+    print("Setting up dataset reader...")
+    image_options = {'resize':True, 'resize_size':IMAGE_SIZE}
+
+    if FLAGS.mode == "train":
+        train_dataset_reader = dataset.BatchDatset(train_records, image_options)
+
+    validation_dataset_reader = dataset.BatchDatset(valid_records, image_options)
+    #################构建数据完成####################################
+
+    ###################构建运行对话##################
+    sess = tf.Session()
+    print("Setting up Saver.....")
+    saver = tf.train.Saver()
+
+    # create two summary writers to show training loss and validation loss in the same graph
+    # need to create two folders 'train' and 'validation' inside FLAGS.logs_dir
+    train_writer = tf.summary.FileWriter(FLAGS.logs_dir + "/train", sess.graph)
+    validation_writer = tf.summary.FileWriter(FLAGS.logs_dir + "validation")
+
+
+    # 首先给变量初始化进行训练验证前的的准备
+    sess.run(tf.global_variables_initializer())
+
+    # 判断有没有checkpoint
+    ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
+    if ckpt and ckpt.model_checkpoint_path:
+        saver.restore(sess, ckpt.model_checkpoint_path)
+        print("Model restored .....")
+
+    # 开始训练或者验证
+    if FLAGS.mode == "train":
+        for itr in xrange(MAX_ITERATION):
+            # 先生成batch数据
+            train_images, train_annotation = train_dataset_reader.next_batch(FLAGS.batch_size)
+            feed_dict = {image: train_images, annotation: train_annotation, keep_probability:0.85}
+
+            # 运行
+            sess.run(train_op, feed_dict=feed_dict)
+
+            # 下面是保存一些能反映训练中的过程的一些信息
+
+            if itr % 10 == 0:
+                train_loss, summary_str = sess.run([loss, loss_summary], feed_dict=feed_dict)
+                print("Step: %d, Train_loss: %d" % (itr, train_loss))
+                train_writer.add_summary(summary_str, itr)
+                train_writer.flush()
+
+            if itr % 500 == 0:
+                valid_images, valid_annotations = validation_dataset_reader.next_batch(FLAGS.batch_size)
+                valid_loss, summary_sva = sess.run([loss, loss_summary], feed_dict={image: valid_images, annotation: valid_annotations,
+                                                       keep_probability: 1.0})
+                print("%s------> Validation_loss: %g" % (datetime.datetime.now(), valid_loss))
+
+                saver.save(sess, FLAGS.checkpoint_dir + "model.ckpt", itr)
+                # add validation loss to TensorBoard
+                validation_writer.add_summary(summary_sva, itr)
+                validation_writer.flush()
+    elif FLAGS.mode == "visualize":
+        valid_images, valid_annotations = validation_dataset_reader.get_random_batch(FLAGS.batch_size)
+        pred = sess.run(pred_annotation, feed_dict={image: valid_images, annotation: valid_annotations,
+                                                    keep_probability: 1.0})
+        valid_annotations = np.squeeze(valid_annotations, axis=3)
+        pred = np.squeeze(pred, axis=3)
+
+        # 保存结果
+        for itr in range(FLAGS.batch_size):
+            utils.save_image(valid_images[itr].astype(np.uint8), FLAGS.image_dir, name="inp_" + str(5+itr))
+            utils.save_image(valid_annotations[itr].astype(np.uint8), FLAGS.image_dir, name="gt_" + str(5+itr))
+            utils.save_image(pred[itr].astype(np.uint8), FLAGS.image_dir, name="pred_" + str(5+itr))
+            print("Saved image: %d" % itr)
+if __name__ == "__main__":
+    tf.app.run()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

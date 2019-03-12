@@ -5,6 +5,7 @@ import tarfile
 import zipfile
 import scipy.io
 import tensorflow as tf
+import scipy.misc as misc
 
 """
 下载对应url的文件
@@ -158,3 +159,16 @@ def conv2d_transpose_strided(x, w, b, output_shape=None, stride=2):
 
     return tf.nn.bias_add(conv, b)
 
+# 保存图像
+def save_image(image, save_dir, name, mean=None):
+    """
+    Save image by unprocessing if mean given else just save
+    :param image:
+    :param save_dir:
+    :param name:
+    :param mean:
+    :return:
+    """
+    if mean:
+        image = unprocess_image(image, mean)
+    misc.imsave(os.path.join(save_dir, name + ".png"), image)
