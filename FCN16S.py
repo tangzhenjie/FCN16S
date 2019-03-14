@@ -79,7 +79,7 @@ def vgg_net(weights, image):
             if FLAGS.debug:
                 utils.add_activation_summary(current)
         elif kind == "pool":
-            current = utils.avg_pool_2x2(current)\
+            current = utils.max_pool_2x2(current)
 
         net[name] = current
     return net
@@ -90,12 +90,16 @@ def vgg_net(weights, image):
  :return 输出与image大小相同的tensor   
 """
 def fcn16s_net(image, keep_prob):
-    # 首先我们padding图片
-    image = utils.pading(image, 100)
     # 转换数据类型
     # 首先我们获取相同部分构造的模型权重
     model_data = utils.get_model_data(FLAGS.model_dir, MODEL_URL)
     weights = model_data["layers"][0]
+    mean = model_data['normalization'][0][0][0]
+    mean_pixel = np.mean(mean, axis=(0, 1))
+    image = utils.process_image(image, mean_pixel)
+
+    # 首先我们padding图片
+    image = utils.pading(image, 100)
     with tf.variable_scope("VGG16"):
         vgg16net_dict = vgg_net(weights, image)
     with tf.variable_scope("FCN16S"):
@@ -177,9 +181,15 @@ def main(argv=None):
     # 我们首先定义网络的输入部分
     keep_probability = tf.placeholder(tf.float32, name="keep_probability")
     image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
-    annotation = tf.placeholder(tf.int32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 1], name="annotation")
+    annotation = tf.placeholder(tf.int64, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 1], name="annotation")
 
     pred_annotation, logits = fcn16s_net(image, keep_probability)
+
+    # 计算m_iou
+    re_shape = tf.stack([tf.shape(pred_annotation)[0], IMAGE_SIZE * IMAGE_SIZE, 1])
+    annotation_new = tf.reshape(annotation, re_shape)
+    pred_annotation_new = tf.reshape(pred_annotation, re_shape)
+    mean_iou, endarray = tf.metrics.mean_iou(annotation_new, pred_annotation_new, NUM_OF_CLASSES)
 
     # 把我们需要观察的图片和生成的结果图保存下来
     tf.summary.image("input_image", image, max_outputs=2)
@@ -236,6 +246,7 @@ def main(argv=None):
 
     # 首先给变量初始化进行训练验证前的的准备
     sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
 
     # 判断有没有checkpoint
     ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
@@ -248,29 +259,19 @@ def main(argv=None):
         for itr in xrange(MAX_ITERATION):
             # 先生成batch数据
             train_images, train_annotation = train_dataset_reader.next_batch(FLAGS.batch_size)
-            feed_dict = {image: train_images, annotation: train_annotation, keep_probability:0.85}
+            feed_dict = {image: train_images, annotation: train_annotation, keep_probability:0.5}
 
             # 运行
             sess.run(train_op, feed_dict=feed_dict)
 
+            # miou
+            m_iou, array_end = sess.run([mean_iou, endarray], feed_dict={image: train_images, annotation: train_annotation, keep_probability:1.0})
+            print(m_iou)
+            print(array_end)
+
             # 下面是保存一些能反映训练中的过程的一些信息
-
-            if itr % 10 == 0:
-                train_loss, summary_str = sess.run([loss, loss_summary], feed_dict=feed_dict)
-                print("Step: %d, Train_loss: %d" % (itr, train_loss))
-                train_writer.add_summary(summary_str, itr)
-                train_writer.flush()
-
             if itr % 500 == 0:
-                valid_images, valid_annotations = validation_dataset_reader.next_batch(FLAGS.batch_size)
-                valid_loss, summary_sva = sess.run([loss, loss_summary], feed_dict={image: valid_images, annotation: valid_annotations,
-                                                       keep_probability: 1.0})
-                print("%s------> Validation_loss: %g" % (datetime.datetime.now(), valid_loss))
-
                 saver.save(sess, FLAGS.checkpoint_dir + "model.ckpt", itr)
-                # add validation loss to TensorBoard
-                validation_writer.add_summary(summary_sva, itr)
-                validation_writer.flush()
     elif FLAGS.mode == "visualize":
         valid_images, valid_annotations = validation_dataset_reader.get_random_batch(FLAGS.batch_size)
         pred = sess.run(pred_annotation, feed_dict={image: valid_images, annotation: valid_annotations,
