@@ -3,10 +3,8 @@ import tensorflow as tf
 import numpy as np
 
 import TensorflowUtils as utils
-import read_MITSceneParsingData as scene_parsing
-import datetime
-import BatchDatsetReader as dataset
 from six.moves import xrange # 兼容python2和python3
+import BatchReader
 
 
 # 定义一些网络需要的参数(可以以命令行可选参数进行重新赋值)
@@ -183,21 +181,22 @@ def main(argv=None):
     image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
     annotation = tf.placeholder(tf.int64, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 1], name="annotation")
 
-    pred_annotation, logits = fcn16s_net(image, keep_probability)
+    # 使用dataset获取输入
+    training_dataset = BatchReader.getBatchTrainDataset(batchsize=FLAGS.batch_size)
+    validation_dataset = BatchReader.getBatchEvalDataset(batchsize=FLAGS.batch_size)
 
-    # 计算m_iou
-    re_shape = tf.stack([tf.shape(pred_annotation)[0], IMAGE_SIZE * IMAGE_SIZE, 1])
-    annotation_new = tf.reshape(annotation, re_shape)
-    pred_annotation_new = tf.reshape(pred_annotation, re_shape)
-    mean_iou, endarray = tf.metrics.mean_iou(annotation_new, pred_annotation_new, NUM_OF_CLASSES)
+    # 构建可重新初始化的迭代器
+    iterator = tf.data.Iterator.from_structure(training_dataset.output_types, training_dataset.output_shapes)
 
-    # 把我们需要观察的图片和生成的结果图保存下来
-    tf.summary.image("input_image", image, max_outputs=2)
-    tf.summary.image("ground_truth", tf.cast(annotation, tf.uint8), max_outputs=2)
-    tf.summary.image("pred_annotation", tf.cast(pred_annotation, tf.uint8), max_outputs=2)
+    next_element = iterator.get_next()
+
+    training_init_op = iterator.make_initializer(training_dataset)
+    validation_init_op = iterator.make_initializer(validation_dataset)
+
+    pred_annotation, logits = fcn16s_net(next_element[0], keep_probability)
 
     # 定义损失函数
-    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.squeeze(annotation, squeeze_dims=[3])), name="entropy")
+    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.squeeze(next_element[1], squeeze_dims=[3])), name="entropy")
 
     # 把损失保存下来
     loss_summary = tf.summary.scalar("entropy", loss)
@@ -205,33 +204,10 @@ def main(argv=None):
     # 获取要训练的变量
     trainable_var = tf.trainable_variables()
 
-    # 如果是调试运行下保存变量
-    if FLAGS.debug:
-        for var in trainable_var:
-            utils.add_to_regularization_and_summary(var)
     train_op = train(loss, trainable_var)
-
-    #创建把所有要保存的调试信息集中起来的操作（以备存入文件）
-    print("Setting up summary op....")
-    summary_op = tf.summary.merge_all()
 
     #################到此我们网络构建完毕#################
 
-    #################下面我们构建数据##########
-    print("Setting up image reader...")
-    train_records, valid_records = scene_parsing.read_dataset(FLAGS.data_dir)
-    # 打印出来看看数据条数是否正确
-    print(len(train_records))
-    print(len(valid_records))
-
-    print("Setting up dataset reader...")
-    image_options = {'resize':True, 'resize_size':IMAGE_SIZE}
-
-    if FLAGS.mode == "train":
-        train_dataset_reader = dataset.BatchDatset(train_records, image_options)
-
-    validation_dataset_reader = dataset.BatchDatset(valid_records, image_options)
-    #################构建数据完成####################################
 
     ###################构建运行对话##################
     sess = tf.Session()
@@ -256,35 +232,22 @@ def main(argv=None):
 
     # 开始训练或者验证
     if FLAGS.mode == "train":
+        sess.run(training_init_op)
         for itr in xrange(MAX_ITERATION):
-            # 先生成batch数据
-            train_images, train_annotation = train_dataset_reader.next_batch(FLAGS.batch_size)
-            feed_dict = {image: train_images, annotation: train_annotation, keep_probability:0.5}
-
+            feed_dict = {keep_probability:0.5}
             # 运行
-            sess.run(train_op, feed_dict=feed_dict)
-
-            # miou
-            m_iou, array_end = sess.run([mean_iou, endarray], feed_dict={image: train_images, annotation: train_annotation, keep_probability:1.0})
-            print(m_iou)
-            print(array_end)
-
+            _, loss_value = sess.run([train_op, loss], feed_dict=feed_dict)
+            print("the %d time: %g" % (itr, loss_value))
             # 下面是保存一些能反映训练中的过程的一些信息
             if itr % 500 == 0:
                 saver.save(sess, FLAGS.checkpoint_dir + "model.ckpt", itr)
     elif FLAGS.mode == "visualize":
-        valid_images, valid_annotations = validation_dataset_reader.get_random_batch(FLAGS.batch_size)
-        pred = sess.run(pred_annotation, feed_dict={image: valid_images, annotation: valid_annotations,
-                                                    keep_probability: 1.0})
-        valid_annotations = np.squeeze(valid_annotations, axis=3)
-        pred = np.squeeze(pred, axis=3)
+        feed_dict={keep_probability: 1.0}
+        # 运行
+        sess.run(validation_init_op)
+        loss_value = sess.run(loss, feed_dict=feed_dict)
 
-        # 保存结果
-        for itr in range(FLAGS.batch_size):
-            utils.save_image(valid_images[itr].astype(np.uint8), FLAGS.image_dir, name="inp_" + str(5+itr))
-            utils.save_image(valid_annotations[itr].astype(np.uint8), FLAGS.image_dir, name="gt_" + str(5+itr))
-            utils.save_image(pred[itr].astype(np.uint8), FLAGS.image_dir, name="pred_" + str(5+itr))
-            print("Saved image: %d" % itr)
+        print("validate loss: %g" % loss_value)
 if __name__ == "__main__":
     tf.app.run()
 

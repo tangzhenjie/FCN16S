@@ -102,7 +102,7 @@ def conv2d_strided(x, W, bias):
 
 # 定义maxpool层使图像缩小一半
 def max_pool_2x2(x):
-    return tf.nn.max_pool(x, ksize=[1, 2, 2 , 1], strides=[1, 2, 2, 1], padding="SAME")
+    return tf.nn.max_pool(x, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding="SAME")
 
 # 定义平均池化使图像缩小一半
 def avg_pool_2x2(x):
