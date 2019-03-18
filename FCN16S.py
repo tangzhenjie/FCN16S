@@ -5,6 +5,7 @@ import numpy as np
 import TensorflowUtils as utils
 from six.moves import xrange # 兼容python2和python3
 import BatchReader
+import read_MITSceneParsingData as Read
 
 
 # 定义一些网络需要的参数(可以以命令行可选参数进行重新赋值)
@@ -178,12 +179,11 @@ def main(argv=None):
     ##########################构建网络部分####################
     # 我们首先定义网络的输入部分
     keep_probability = tf.placeholder(tf.float32, name="keep_probability")
-    image = tf.placeholder(tf.float32, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 3], name="input_image")
-    annotation = tf.placeholder(tf.int64, shape=[None, IMAGE_SIZE, IMAGE_SIZE, 1], name="annotation")
 
     # 使用dataset获取输入
-    training_dataset = BatchReader.getBatchTrainDataset(batchsize=FLAGS.batch_size)
-    validation_dataset = BatchReader.getBatchEvalDataset(batchsize=FLAGS.batch_size)
+    train_filenames, eval_filename = Read.read_dataset(FLAGS.data_dir)
+    training_dataset = BatchReader.getBatchTrainDataset(train_filenames, batchsize=FLAGS.batch_size)
+    validation_dataset = BatchReader.getBatchEvalDataset(eval_filename,batchsize=FLAGS.batch_size)
 
     # 构建可重新初始化的迭代器
     iterator = tf.data.Iterator.from_structure(training_dataset.output_types, training_dataset.output_shapes)
@@ -198,8 +198,9 @@ def main(argv=None):
     # 定义损失函数
     loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.squeeze(next_element[1], squeeze_dims=[3])), name="entropy")
 
-    # 把损失保存下来
-    loss_summary = tf.summary.scalar("entropy", loss)
+    # 定义m_iou
+    m_iou, confusion_matrix = tf.metrics.mean_iou(labels=tf.squeeze(next_element[1], squeeze_dims=[3]),predictions=tf.squeeze(pred_annotation, squeeze_dims=[3]), num_classes=NUM_OF_CLASSES)
+
 
     # 获取要训练的变量
     trainable_var = tf.trainable_variables()
@@ -213,12 +214,6 @@ def main(argv=None):
     sess = tf.Session()
     print("Setting up Saver.....")
     saver = tf.train.Saver()
-
-    # create two summary writers to show training loss and validation loss in the same graph
-    # need to create two folders 'train' and 'validation' inside FLAGS.logs_dir
-    train_writer = tf.summary.FileWriter(FLAGS.logs_dir + "/train", sess.graph)
-    validation_writer = tf.summary.FileWriter(FLAGS.logs_dir + "validation")
-
 
     # 首先给变量初始化进行训练验证前的的准备
     sess.run(tf.global_variables_initializer())
@@ -236,8 +231,9 @@ def main(argv=None):
         for itr in xrange(MAX_ITERATION):
             feed_dict = {keep_probability:0.5}
             # 运行
-            _, loss_value = sess.run([train_op, loss], feed_dict=feed_dict)
+            _, loss_value, mIOU, _ = sess.run([train_op, loss, m_iou, confusion_matrix], feed_dict=feed_dict)
             print("the %d time: %g" % (itr, loss_value))
+            print("the %d time: %g" % (itr, mIOU))
             # 下面是保存一些能反映训练中的过程的一些信息
             if itr % 500 == 0:
                 saver.save(sess, FLAGS.checkpoint_dir + "model.ckpt", itr)

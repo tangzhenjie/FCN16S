@@ -137,7 +137,7 @@ def pading(image, paddingdata):
         # tensor的shape为[height, width, channels]
         target_height = image.shape[0] + paddingdata * 2
         target_width = image.shape[1] + paddingdata * 2
-        return tf.image.pad_to_bounding_box(image,offset_height=paddingdata, offset_width=paddingdata, target_height=target_height,target_width=target_width)
+        return tf.image.pad_to_bounding_box(image, offset_height=paddingdata, offset_width=paddingdata, target_height=target_height,target_width=target_width)
     elif len(image.shape) == 4:
         # [batch, height, width, channels]
         target_height = image.shape[1] + paddingdata * 2
