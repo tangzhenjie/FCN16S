@@ -73,3 +73,5 @@ def create_image_lists(image_dir):
 
     return image_list
 
+
+

@@ -4,8 +4,8 @@ import numpy as np
 
 import TensorflowUtils as utils
 from six.moves import xrange # 兼容python2和python3
-import BatchReader
-import read_MITSceneParsingData as Read
+import read_MITSceneParsingData as DatasetReader
+import BatchReader as BatchReader
 
 
 # 定义一些网络需要的参数(可以以命令行可选参数进行重新赋值)
@@ -21,7 +21,7 @@ tf.flags.DEFINE_float("learning_rate", "1e-4", "learning rate for Adam Optimizer
 # 存放VGG16模型的mat (我们使用matlab训练好的VGG16参数)
 tf.flags.DEFINE_string("model_dir", "D:\pycharm_program\FCN16S\Model_zoo\\", "Path to vgg model mat")
 # 是否是调试状态（如果是调试状态会额外保存一些信息）
-tf.flags.DEFINE_bool("debug", "False", "Model Debug:True/ False")
+tf.flags.DEFINE_bool("debug", "True", "Model Debug:True/ False")
 # 执行的状态（训练 测试 显示）
 tf.flags.DEFINE_string("mode", "train", "Mode: train/ test/ visualize")
 # checkpoint目录
@@ -180,32 +180,40 @@ def main(argv=None):
     # 我们首先定义网络的输入部分
     keep_probability = tf.placeholder(tf.float32, name="keep_probability")
 
-    # 使用dataset获取输入
-    train_filenames, eval_filename = Read.read_dataset(FLAGS.data_dir)
-    training_dataset = BatchReader.getBatchTrainDataset(train_filenames, batchsize=FLAGS.batch_size)
-    validation_dataset = BatchReader.getBatchEvalDataset(eval_filename,batchsize=FLAGS.batch_size)
+    train_filepaths, eval_filepaths = DatasetReader.read_dataset(FLAGS.data_dir)
+    if FLAGS.mode == "train":
+        train_filepaths = np.array(train_filepaths, dtype=np.string_)
+        image_filepaths = train_filepaths[:, 0]
+        label_filepaths = train_filepaths[:, 1]
+    else:
+        eval_filepaths = np.array(eval_filepaths, dtype=np.string_)
+        image_filepaths = eval_filepaths[:, 0]
+        label_filepaths = eval_filepaths[:, 1]
 
-    # 构建可重新初始化的迭代器
-    iterator = tf.data.Iterator.from_structure(training_dataset.output_types, training_dataset.output_shapes)
+    images, labels = BatchReader.read_batch_image(image_filepaths, label_filepaths, IMAGE_SIZE, FLAGS.batch_size)
+    labels = tf.cast(labels, tf.int64)
+    tf.summary.image("images", images, max_outputs=3)
+    tf.summary.image("labels", tf.cast(labels, tf.uint8), max_outputs=3)
 
-    next_element = iterator.get_next()
 
-    training_init_op = iterator.make_initializer(training_dataset)
-    validation_init_op = iterator.make_initializer(validation_dataset)
-
-    pred_annotation, logits = fcn16s_net(next_element[0], keep_probability)
-
+    pred_annotation, logits = fcn16s_net(images, keep_probability)
+    tf.summary.image("pre", tf.cast(pred_annotation, tf.uint8), max_outputs=3)
     # 定义损失函数
-    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.squeeze(next_element[1], squeeze_dims=[3])), name="entropy")
-
+    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=tf.squeeze(labels, squeeze_dims=[3])), name="entropy")
+    if FLAGS.debug:
+        tf.summary.scalar("loss", loss)
     # 定义m_iou
-    m_iou, confusion_matrix = tf.metrics.mean_iou(labels=tf.squeeze(next_element[1], squeeze_dims=[3]),predictions=tf.squeeze(pred_annotation, squeeze_dims=[3]), num_classes=NUM_OF_CLASSES)
-
+    m_iou, confusion_matrix = tf.metrics.mean_iou(labels=tf.squeeze(labels, squeeze_dims=[3]),predictions=tf.squeeze(pred_annotation, squeeze_dims=[3]), num_classes=NUM_OF_CLASSES)
+    if FLAGS.debug:
+        tf.summary.scalar("m_iou", m_iou)
 
     # 获取要训练的变量
     trainable_var = tf.trainable_variables()
 
     train_op = train(loss, trainable_var)
+
+    # tensorboard op
+    summary = tf.summary.merge_all()
 
     #################到此我们网络构建完毕#################
 
@@ -218,32 +226,37 @@ def main(argv=None):
     # 首先给变量初始化进行训练验证前的的准备
     sess.run(tf.global_variables_initializer())
     sess.run(tf.local_variables_initializer())
-
+    train_summary_writer = tf.summary.FileWriter(FLAGS.logs_dir + "\\train", sess.graph)
     # 判断有没有checkpoint
     ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
     if ckpt and ckpt.model_checkpoint_path:
         saver.restore(sess, ckpt.model_checkpoint_path)
         print("Model restored .....")
 
+    # Start the data queue
+    tf.train.start_queue_runners(sess=sess)
     # 开始训练或者验证
     if FLAGS.mode == "train":
-        sess.run(training_init_op)
+        feed_dict = {keep_probability: 0.5}
         for itr in xrange(MAX_ITERATION):
-            feed_dict = {keep_probability:0.5}
             # 运行
             _, loss_value, mIOU, _ = sess.run([train_op, loss, m_iou, confusion_matrix], feed_dict=feed_dict)
-            print("the %d time: %g" % (itr, loss_value))
-            print("the %d time: %g" % (itr, mIOU))
+            print("the %d time loss: %g" % (itr, loss_value))
+            print("the %d time m_iou: %g" % (itr, mIOU))
             # 下面是保存一些能反映训练中的过程的一些信息
             if itr % 500 == 0:
                 saver.save(sess, FLAGS.checkpoint_dir + "model.ckpt", itr)
+                print("model saved")
+                summary_str = sess.run(summary, feed_dict={keep_probability: 1.0})
+                train_summary_writer.add_summary(summary_str, itr)
+                train_summary_writer.flush()
+                print("summary saved")
     elif FLAGS.mode == "visualize":
         feed_dict={keep_probability: 1.0}
         # 运行
-        sess.run(validation_init_op)
-        loss_value = sess.run(loss, feed_dict=feed_dict)
-
+        loss_value, mIOU, _ = sess.run([loss, m_iou, confusion_matrix], feed_dict=feed_dict)
         print("validate loss: %g" % loss_value)
+        print("validate m_iou: %g" % mIOU)
 if __name__ == "__main__":
     tf.app.run()
 
